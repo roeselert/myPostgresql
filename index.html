@@ -20,13 +20,14 @@
 
 <script type="module">
   import { PGlite } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js'
-  //import { pg_stat_statements } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/contrib/pg_stat_statements/dist/index.js';
-  //import { auto_explain } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/contrib/auto_explain/dist/index.js';
+  //import { pg_stat_statements } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/contrib/pg_stat_statements.js';
+  //import { auto_explain } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/contrib/auto_explain.js';
 
-  const pg = new PGlite();
   
   // Create a PGlite instance
-  /* const pg = new PGlite({
+  // const pg = new PGlite();
+
+  const pg = new PGlite({
     extensions: { pg_stat_statements, auto_explain  }
   }); 
   
@@ -34,7 +35,6 @@
   console.log(res1);
   const res2 = await pg.exec('CREATE EXTENSION IF NOT EXISTS pg_stat_statements;')
   console.log(res2);
-  */
   
   // Retrieve the Repl element
   const repl = document.getElementById('repl')
