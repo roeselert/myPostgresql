@@ -20,10 +20,17 @@
 
 <script type="module">
   import { PGlite } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js'
+  import { pg_stat_statements } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/contrib/pg_stat_statements/dist/index.js';
+  import { auto_explain } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/contrib/auto_explain/dist/index.js';
 
   // Create a PGlite instance
-  const pg = new PGlite()
+  const pg = new PGlite({
+    extensions: { pg_stat_statements, auto_explain  }
+  });
 
+  await pg.exec('CREATE EXTENSION IF NOT EXISTS auto_explain;')
+  await pg.exec('CREATE EXTENSION IF NOT EXISTS pg_stat_statements;')
+  
   // Retrieve the Repl element
   const repl = document.getElementById('repl')
 
