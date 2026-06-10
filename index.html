@@ -27,6 +27,9 @@
   // Create a PGlite instance
   // const pg = new PGlite();
 
+  console.log(pg_stat_statements)
+  console.log(auto_explain)
+  
   const pg = new PGlite({
     extensions: { pg_stat_statements, auto_explain  }
   }); 
