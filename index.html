@@ -30,12 +30,12 @@
   const pg = new PGlite({
     extensions: { pg_stat_statements, auto_explain  }
   }); 
-  
+  /*
   const res1 = await pg.exec('CREATE EXTENSION IF NOT EXISTS auto_explain;')
   console.log(res1);
   const res2 = await pg.exec('CREATE EXTENSION IF NOT EXISTS pg_stat_statements;')
   console.log(res2);
-  
+  */
   // Retrieve the Repl element
   const repl = document.getElementById('repl')
 
