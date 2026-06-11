@@ -17,8 +17,7 @@ jobs:
         node-version: '20'
 
     - name: Install dependencies
-      run: |
-          npm install @electric-sql/pglite
+      run: npm install
           
     - name: Run script and dump output
       run: |
