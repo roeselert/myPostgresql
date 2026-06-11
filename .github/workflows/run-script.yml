@@ -17,8 +17,11 @@ jobs:
         node-version: '20'
 
     - name: Install dependencies
-      run: npm install
-
+      run: |
+          npm install @electric-sql/pglite
+          npm install @electric-sql/pglite/contrib/auto_explain
+          npm install @electric-sql/pglite/contrib/pg_stat_statements
+          
     - name: Run script and dump output
       run: |
         node batch.js
