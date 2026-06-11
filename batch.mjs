@@ -1,20 +1,17 @@
 import fs from 'node:fs/promises';
 import { PGlite} from '@electric-sql/pglite';
 import { auto_explain } from '@electric-sql/pglite/contrib/auto_explain';
-import { pg_stat_statements } from '@electric-sql/pglite/contrib/pg_stat_statements';
 
 async function main() {
   // 1. PGlite Instanz initialisieren
   const pg = new PGlite({
-    extensions: { pg_stat_statements, auto_explain }
+    extensions: { auto_explain }
   });
 
-  // 2. Extensions aktivieren
-  const res1 = await pg.exec('CREATE EXTENSION IF NOT EXISTS auto_explain;');
-  console.log('Auto Explain:', res1);
-  
-  const res2 = await pg.exec('CREATE EXTENSION IF NOT EXISTS pg_stat_statements;');
-  console.log('Stat Statements:', res2);
+  // 2. auto_explain konfigurieren (kein CREATE EXTENSION – es ist eine preload library)
+  await pg.exec("SET auto_explain.log_min_duration = 0;");
+  await pg.exec("SET auto_explain.log_analyze = true;");
+  console.log('Auto Explain configured.');
 
   // 3. Initiale History-Befehle ausführen
   await pg.exec("CREATE TABLE test (id serial primary key, name text);");
