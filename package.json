@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "description": "PGlite script running with local node dependencies",
-  "main": "batch.js",
+  "main": "batch.mjs",
   "scripts": {
-    "start": "node batch.js"
+    "start": "node batch.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.1"
