@@ -19,8 +19,6 @@ jobs:
     - name: Install dependencies
       run: |
           npm install @electric-sql/pglite
-          npm install @electric-sql/pglite/contrib/auto_explain
-          npm install @electric-sql/pglite/contrib/pg_stat_statements
           
     - name: Run script and dump output
       run: |
