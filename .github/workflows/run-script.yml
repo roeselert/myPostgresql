@@ -21,7 +21,7 @@ jobs:
           
     - name: Run script and dump output
       run: |
-        node batch.js
+        node batch.mjs
 
     - name: Upload output artifact
       uses: actions/upload-artifact@v4
