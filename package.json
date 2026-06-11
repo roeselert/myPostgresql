@@ -8,8 +8,8 @@
     "start": "node batch.js"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.4.5",
-    "@electric-sql/pglite/contrib/auto_explain": "^0.4.5",
-    "@electric-sql/pglite/contrib/pg_stat_statements": "^0.4.5"
+    "@electric-sql/pglite": "^0.5.1",
+    "@electric-sql/pglite/contrib/auto_explain": "^0.5.1",
+    "@electric-sql/pglite/contrib/pg_stat_statements": "^0.5.1"
   }
 }
