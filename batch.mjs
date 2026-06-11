@@ -28,7 +28,19 @@ async function main() {
     
     // SQL-Inhalt in der Datenbank ausführen
     const res = await pg.exec(data);
-    console.log('SQL Ausführung erfolgreich:', res);
+    console.log('SQL Ausführung erfolgreich:');
+
+    res.forEach((packet, index) => {
+      console.log(`--- Paket ${index + 1} (affectedRows: ${packet.affectedRows}) ---`);
+  
+      if (packet.rows && packet.rows.length > 0) {
+        packet.rows.forEach((row, rowIndex) => {
+          console.log(`  Zeile ${rowIndex + 1}:`, JSON.stringify(row));
+        });
+      } else {
+        console.log("  Keine Zeilen vorhanden.");
+      }
+    });
     
   } catch (error) {
     console.error('Error reading or executing local SQL file:', error);
