@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "type": "module",
   "description": "PGlite script running with local node dependencies",
-  "main": "index.js",
+  "main": "batch.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node batch.js"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.2.0"
+    "@electric-sql/pglite",
+    "@electric-sql/pglite/contrib/auto_explain",
+    "@electric-sql/pglite/contrib/pg_stat_statements"
   }
 }
