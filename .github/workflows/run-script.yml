@@ -14,14 +14,14 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20'
+        node-version: '22'
 
     - name: Install dependencies
       run: npm install
           
     - name: Run script and dump output
       run: |
-        node batch.mjs
+        npm run start
 
     - name: Upload output artifact
       uses: actions/upload-artifact@v4
