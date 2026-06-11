@@ -1,0 +1,13 @@
+{
+  "name": "pglite-local-script",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "PGlite script running with local node dependencies",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.2.0"
+  }
+}
