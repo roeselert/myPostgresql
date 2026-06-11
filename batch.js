@@ -1,7 +1,5 @@
 import fs from 'node:fs/promises';
-import { PGlite } from 'https://jsdelivr.net';
-import { pg_stat_statements } from 'https://jsdelivr.net';
-import { auto_explain } from 'https://jsdelivr.net';
+import { PGlite, pg_stat_statements, auto_explain } from '@electric-sql/pglite';
 
 async function main() {
   // 1. PGlite Instanz initialisieren
