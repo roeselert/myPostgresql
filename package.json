@@ -6,5 +6,8 @@
   "main": "batch.js",
   "scripts": {
     "start": "node batch.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.1"
   }
 }
