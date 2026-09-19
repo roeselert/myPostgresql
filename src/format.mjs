@@ -51,8 +51,53 @@ function dropQueryText(plan) {
   return (start === -1 ? lines : lines.slice(start)).join('\n');
 }
 
+/** The IO waits of one statement, as one compact line per wait event. */
+export function formatWaits(io, { indent = '  ' } = {}) {
+  if (io?.deferred) return `${indent}waits: deferred — inside a transaction block they land on the COMMIT`;
+  if (!io || !io.waits.length) return `${indent}waits: none (${io?.hits ?? 0} buffer hits)`;
+  const lines = io.waits.map(
+    (wait) =>
+      `${indent}  IO:${wait.waitEvent} [${wait.context}] ` +
+      `${wait.count}× ${wait.timeMs} ms${wait.bytes ? ` ${formatBytes(wait.bytes)}` : ''}`,
+  );
+  return [`${indent}waits: ${io.totalMs} ms over ${io.waits.length} event(s), ${io.hits} buffer hits`, ...lines].join('\n');
+}
+
+/** The accumulated wait profile, with the description from pg_wait_events. */
+export function formatWaitProfile(rows, { maxWidth = 52 } = {}) {
+  if (!rows.length) return '(no waits recorded — run with wait measurement enabled)';
+  return formatTable(
+    rows.map((row) => ({
+      wait_event: `${row.type}:${row.waitEvent}`,
+      context: row.context,
+      count: row.count,
+      total_ms: row.timeMs,
+      bytes: row.bytes ? formatBytes(row.bytes) : '',
+      description: row.description,
+    })),
+    { maxRows: rows.length, maxWidth },
+  );
+}
+
+/** Rows out of pg_wait_events. */
+export function formatWaitEvents(rows, { maxWidth = 70 } = {}) {
+  if (!rows.length) return '(no wait event matches)';
+  return formatTable(rows, { maxRows: rows.length, maxWidth, fields: ['type', 'name', 'description'] });
+}
+
+export function formatBytes(bytes) {
+  const units = ['B', 'kB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
+}
+
 /** A single statement outcome: header, result rows, plans. */
-export function formatOutcome(outcome, { index, total, maxRows = 20, showPlans = true } = {}) {
+export function formatOutcome(outcome, { index, total, maxRows = 20, showPlans = true, showWaits = false } = {}) {
   const position = index && total ? `[${index}/${total}] ` : '';
   const out = [`${position}${summarize(outcome.sql, 100)}   (${outcome.elapsedMs.toFixed(1)} ms)`];
 
@@ -67,6 +112,7 @@ export function formatOutcome(outcome, { index, total, maxRows = 20, showPlans =
   }
 
   if (showPlans) for (const plan of outcome.plans) out.push(formatPlan(plan));
+  if (showWaits && outcome.io) out.push(formatWaits(outcome.io));
   return out.join('\n');
 }
 
@@ -81,6 +127,7 @@ export function formatStatements(rows, { maxWidth = 70 } = {}) {
     rows: row.rows,
     hit: row.blks_hit,
     read: row.blks_read,
+    level: row.level,
     query: summarize(row.query, maxWidth),
   }));
   return formatTable(compact, { maxRows: rows.length, maxWidth });

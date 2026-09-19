@@ -16,9 +16,19 @@ import { auto_explain } from '@electric-sql/pglite/contrib/auto_explain';
 import { pg_stat_statements } from '@electric-sql/pglite/contrib/pg_stat_statements';
 
 import { PgLog, plansOf, realConsole } from './pg-log.mjs';
-import { splitSql, summarize } from './sql-split.mjs';
+import { splitSql, stripComments, summarize } from './sql-split.mjs';
+import {
+  currentActivity,
+  describeWaits,
+  ioDelta,
+  ioSnapshot,
+  waitEventCatalog,
+  waitEventTypes,
+  waitProfile,
+} from './wait-events.mjs';
 
 export { plansOf, realConsole, splitSql, summarize };
+export { knownIoWaitEvents, ioWaitEvent } from './wait-events.mjs';
 
 /**
  * Server settings applied after startup. `auto_explain` is session loaded
@@ -45,6 +55,7 @@ export const DEFAULT_SETTINGS = {
   'pg_stat_statements.track': 'all',
   'pg_stat_statements.track_utility': 'on',
   'track_io_timing': 'on',
+  'track_wal_io_timing': 'on',
   'log_min_messages': 'warning',
 };
 
@@ -58,9 +69,18 @@ const WRAPPED_METHODS = ['query', 'exec', 'sql', 'transaction', 'describeQuery']
  * @param {Function} [options.loadSql]   `(name) => Promise<string>`, used by `runFile`
  * @param {Function} [options.onEntry]   called with every captured server log entry
  * @param {Function} [options.onProgress] called with `(phase, detail)` during startup
+ * @param {boolean}  [options.measureWaits] measure the I/O waits of every statement
  */
 export async function createTestbed(options = {}) {
-  const { dataDir, settings = {}, extensions = {}, loadSql, onEntry, onProgress = () => {} } = options;
+  const {
+    dataDir,
+    settings = {},
+    extensions = {},
+    loadSql,
+    onEntry,
+    onProgress = () => {},
+    measureWaits = false,
+  } = options;
 
   const log = new PgLog({ onEntry }).install();
   const effective = { ...DEFAULT_SETTINGS, ...settings };
@@ -97,6 +117,15 @@ export async function createTestbed(options = {}) {
   }
   onProgress('settings', applied);
 
+  // Reading pg_stat_io touches catalogs; warm them once so the measurement
+  // itself does not report I/O waits of its own.
+  await ioSnapshot(pg);
+  await ioSnapshot(pg);
+
+  let waitsEnabled = Boolean(measureWaits);
+  let inTransactionBlock = false;
+  const recordedWaits = [];
+
   const testbed = {
     pg,
     log,
@@ -109,19 +138,65 @@ export async function createTestbed(options = {}) {
       return rows[0].version;
     },
 
-    /** Run one statement and return its result plus the plans it produced. */
-    async run(sql, params) {
+    /**
+     * Run one statement and return its result plus the plans it produced.
+     *
+     * @param {string} sql
+     * @param {object} [options]
+     * @param {unknown[]} [options.params] run it as a prepared query
+     * @param {boolean}   [options.waits]  measure the I/O waits it caused
+     */
+    async run(sql, { params, waits = waitsEnabled } = {}) {
+      // Taken before the statement so the snapshot query's own I/O, which
+      // lands after it, cannot leak into the measured window.
+      const before = waits ? await ioSnapshot(pg) : undefined;
       const started = now();
+      let outcome;
       try {
         const { result, entries } = await log.capture(() =>
           params ? pg.query(sql, params) : pg.exec(sql),
         );
         const results = Array.isArray(result) ? result : [result];
-        return { sql, results, entries, plans: plansOf(entries), elapsedMs: now() - started };
+        outcome = { sql, results, entries, plans: plansOf(entries), elapsedMs: now() - started };
       } catch (error) {
         const entries = error.pgLogEntries ?? [];
-        return { sql, results: [], entries, plans: plansOf(entries), elapsedMs: now() - started, error };
+        outcome = { sql, results: [], entries, plans: plansOf(entries), elapsedMs: now() - started, error };
       }
+      const wasInBlock = inTransactionBlock;
+      inTransactionBlock = nextTransactionState(sql, inTransactionBlock);
+
+      if (before) {
+        outcome.io = ioDelta(before, await ioSnapshot(pg));
+        // A backend flushes its statistics when a transaction ends, so inside
+        // an explicit block everything shows up on the COMMIT instead.
+        outcome.io.deferred = wasInBlock && inTransactionBlock;
+        outcome.waits = outcome.io.waits;
+        recordedWaits.push(...outcome.waits);
+      }
+      return outcome;
+    },
+
+    /** Query `pg_wait_events`: every wait event the server knows, described. */
+    waitEvents: (options) => waitEventCatalog(pg, options),
+
+    /** How many wait events the server knows, per type. */
+    waitEventTypes: () => waitEventTypes(pg),
+
+    /** `pg_stat_activity` as this backend sees itself. */
+    activity: () => currentActivity(pg),
+
+    /** Turn the per statement wait measurement on or off for later runs. */
+    measureWaits(enabled = true) {
+      waitsEnabled = enabled;
+      return waitsEnabled;
+    },
+
+    /** Everything measured so far, aggregated by wait event and described. */
+    waitProfile: () => describeWaits(pg, waitProfile(recordedWaits)),
+
+    /** The raw wait rows recorded so far. */
+    get recordedWaits() {
+      return recordedWaits;
     },
 
     /**
@@ -170,10 +245,11 @@ export async function createTestbed(options = {}) {
                 rows,
                 shared_blks_hit  AS blks_hit,
                 shared_blks_read AS blks_read,
+                CASE WHEN toplevel THEN 'top' ELSE 'nested' END AS level,
                 query
            FROM pg_stat_statements
           WHERE queryid IS NOT NULL
-            AND query NOT ILIKE '%pg_stat_statements%'
+            AND query NOT ILIKE ALL (ARRAY['%pg_stat_statements%', '%pg_stat_io%', '%pg_stat_force_next_flush%'])
             AND ($1 OR query !~* '^[[:space:]]*(set|show|load|begin|commit|rollback)[[:>:]]')
           ORDER BY ${column} DESC NULLS LAST
           LIMIT $2`,
@@ -186,6 +262,7 @@ export async function createTestbed(options = {}) {
     async resetStats() {
       await pg.query('SELECT pg_stat_statements_reset()');
       log.clear();
+      recordedWaits.length = 0;
     },
 
     /** Change auto_explain / pg_stat_statements settings at runtime. */
@@ -206,16 +283,30 @@ export async function createTestbed(options = {}) {
   return testbed;
 }
 
+/** Queries the bed runs to report on itself, which no report should list. */
+const BOOKKEEPING = /pg_stat_statements|pg_stat_io|pg_stat_force_next_flush|pg_wait_events|pg_stat_activity/i;
+
 /**
- * The plans auto_explain logged, most expensive first. Queries against
- * pg_stat_statements are dropped: those are the bed reporting on itself.
+ * The plans auto_explain logged, most expensive first. The bed's own
+ * bookkeeping queries are dropped.
  */
 export function slowestPlans(entries, limit = 10) {
   return entries
-    .filter((entry) => entry.kind === 'plan' && !/pg_stat_statements/i.test(entry.queryText ?? ''))
+    .filter((entry) => entry.kind === 'plan' && !BOOKKEEPING.test(entry.queryText ?? ''))
     .sort((a, b) => b.durationMs - a.durationMs)
     .slice(0, limit)
     .map((entry) => ({ ms: entry.durationMs, query: summarize(entry.queryText ?? '', 80) }));
+}
+
+const BLOCK_START = /^\s*(begin|start\s+transaction)\b/i;
+const BLOCK_END = /^\s*(commit|end|rollback|abort)\b/i;
+
+/** Track BEGIN/COMMIT so waits can say when they are deferred to the COMMIT. */
+function nextTransactionState(sql, open) {
+  const statement = stripComments(sql);
+  if (BLOCK_START.test(statement)) return true;
+  if (BLOCK_END.test(statement)) return false;
+  return open;
 }
 
 const STAT_ORDERS = {

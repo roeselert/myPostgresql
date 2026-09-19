@@ -160,6 +160,14 @@
   <button id="clear-button" type="button">Clear panel</button>
 </div>
 
+<div class="controls">
+  <form id="wait-form">
+    <input id="wait-input" type="text" placeholder="look a wait event up: lock, WALWrite, buffer …" />
+    <button type="submit">Wait events</button>
+  </form>
+  <button id="wait-profile-button" type="button">Wait profile</button>
+</div>
+
 <div class="layout">
   <section>
     <h2>REPL</h2>
@@ -175,7 +183,10 @@
   Start up files come from the query string, e.g.
   <code>?file=train.sql&amp;file=user.sql</code>. Further parameters:
   <code>min_duration</code>, <code>analyze</code>, <code>format</code>,
-  <code>track</code>, <code>split</code>, <code>top</code>.
+  <code>track</code>, <code>split</code>, <code>top</code>, <code>waits</code>.
+  With <code>?waits=1</code> the start up files report what they waited on;
+  for a statement typed below, the plan's <code>Buffers</code> and
+  <code>I/O Timings</code> lines carry the same information.
 </footer>
 
 <script type="module">
@@ -192,6 +203,9 @@
       slowestButton: document.getElementById('slowest-button'),
       resetButton: document.getElementById('reset-button'),
       clearButton: document.getElementById('clear-button'),
+      waitForm: document.getElementById('wait-form'),
+      waitInput: document.getElementById('wait-input'),
+      waitProfileButton: document.getElementById('wait-profile-button'),
     },
   }).catch((error) => {
     document.getElementById('status').textContent = `failed to start: ${error.message}`;
