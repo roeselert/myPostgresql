@@ -10,6 +10,8 @@
  *   node batch.mjs                      # runs user.sql
  *   node batch.mjs train.sql user.sql   # runs both, in order
  *   node batch.mjs --sql "SELECT 1" --no-plans
+ *   node batch.mjs --waits                   # what each statement waited on
+ *   node batch.mjs --wait-events lock        # look wait events up in the catalog
  *   node batch.mjs --help
  *
  * The REPL bed in index.html drives the same core from src/testbed.mjs.
@@ -20,7 +22,14 @@ import path from 'node:path';
 import process from 'node:process';
 
 import { createTestbed, realConsole, slowestPlans } from './src/testbed.mjs';
-import { formatOutcome, formatStatements, formatTable, heading } from './src/format.mjs';
+import {
+  formatOutcome,
+  formatStatements,
+  formatTable,
+  formatWaitEvents,
+  formatWaitProfile,
+  heading,
+} from './src/format.mjs';
 
 const USAGE = `Usage: node batch.mjs [options] [file.sql ...]
 
@@ -29,6 +38,9 @@ const USAGE = `Usage: node batch.mjs [options] [file.sql ...]
   --no-split             send each file as one batch instead of statement by statement
   --stop-on-error        abort a file after the first failing statement
   --no-plans             do not print the auto_explain plans
+  --waits                measure the I/O waits of every statement and report a profile
+  --wait-events <text>   look wait events up in pg_wait_events and exit ("all" for every one)
+  --wait-type <type>     restrict --wait-events to a type: IO, Lock, LWLock, IPC, Client, …
   --min-duration <ms>    auto_explain.log_min_duration (default 0, -1 disables)
   --no-analyze           turn auto_explain.log_analyze off (plan only, no execution stats)
   --format <fmt>         auto_explain.log_format: text | json | yaml | xml
@@ -46,6 +58,7 @@ const DEFAULT_FILES = ['user.sql'];
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.waitEvents !== undefined && !options.explicitTop) options.top = 40;
   if (options.help) {
     realConsole.log(USAGE);
     return;
@@ -56,6 +69,7 @@ async function main() {
 
   const testbed = await createTestbed({
     dataDir: options.dataDir,
+    measureWaits: options.waits,
     loadSql: (name) => fs.readFile(path.resolve(process.cwd(), name), 'utf-8'),
     settings: {
       'auto_explain.log_min_duration': options.minDuration,
@@ -67,6 +81,13 @@ async function main() {
       if (phase === 'sql-file') sink.write(heading(`SQL file: ${detail}`));
     },
   });
+
+  if (options.waitEvents !== undefined) {
+    await reportWaitEvents(testbed, options, sink);
+    await testbed.close();
+    await sink.flush();
+    return;
+  }
 
   sink.write(heading('PGlite test bed'));
   sink.write(`  ${await testbed.version()}`);
@@ -82,7 +103,15 @@ async function main() {
   let failures = 0;
   const runOutcome = (outcome, index, total) => {
     if (outcome.error) failures += 1;
-    sink.write(formatOutcome(outcome, { index, total, maxRows: options.rows, showPlans: options.plans }));
+    sink.write(
+      formatOutcome(outcome, {
+        index,
+        total,
+        maxRows: options.rows,
+        showPlans: options.plans,
+        showWaits: options.waits,
+      }),
+    );
     sink.write('');
   };
 
@@ -116,6 +145,11 @@ async function main() {
   sink.write(heading(`Slowest ${options.top} single executions (auto_explain)`), { always: true });
   sink.write(formatTable(slowestPlans(plansSoFar, options.top), { maxRows: options.top }), { always: true });
 
+  if (options.waits) {
+    sink.write(heading('Wait profile (pg_stat_io, described by pg_wait_events)'), { always: true });
+    sink.write(formatWaitProfile(await testbed.waitProfile()), { always: true });
+  }
+
   await testbed.close();
   await sink.flush();
 
@@ -123,6 +157,30 @@ async function main() {
     realConsole.error(`\n${failures} statement(s) failed.`);
     process.exitCode = 1;
   }
+}
+
+/** `--wait-events`: the catalog, not a workload. */
+async function reportWaitEvents(testbed, options, sink) {
+  const search = /^(all|\*)$/i.test(options.waitEvents) ? undefined : options.waitEvents;
+  sink.write(heading('pg_wait_events'), { always: true });
+  sink.write(
+    formatTable(await testbed.waitEventTypes(), { maxRows: 20, fields: ['type', 'events'] }),
+    { always: true },
+  );
+  const rows = await testbed.waitEvents({ search, type: options.waitType, limit: options.top });
+  sink.write(
+    heading(
+      [
+        `${rows.length} match(es)`,
+        search ? `for "${search}"` : '',
+        options.waitType ? `of type ${options.waitType}` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    ),
+    { always: true },
+  );
+  sink.write(formatWaitEvents(rows), { always: true });
 }
 
 function describe(settings, prefix) {
@@ -161,6 +219,9 @@ function parseArgs(argv) {
     split: true,
     stopOnError: false,
     plans: true,
+    waits: false,
+    waitEvents: undefined,
+    waitType: undefined,
     analyze: true,
     minDuration: 0,
     format: 'text',
@@ -190,11 +251,14 @@ function parseArgs(argv) {
       case '--no-split': options.split = false; break;
       case '--stop-on-error': options.stopOnError = true; break;
       case '--no-plans': options.plans = false; break;
+      case '--waits': options.waits = true; break;
+      case '--wait-events': options.waitEvents = next(); break;
+      case '--wait-type': options.waitType = next(); break;
       case '--no-analyze': options.analyze = false; break;
       case '--min-duration': options.minDuration = Number(next()); break;
       case '--format': options.format = next(); break;
       case '--track': options.track = next(); break;
-      case '--top': options.top = Number(next()); break;
+      case '--top': options.top = Number(next()); options.explicitTop = true; break;
       case '--order': options.order = next(); break;
       case '--rows': options.rows = Number(next()); break;
       case '--data-dir': options.dataDir = next(); break;

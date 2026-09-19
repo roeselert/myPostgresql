@@ -14,11 +14,18 @@
  *   index.html?file=https://example.org/schema.sql
  *
  * Other recognised parameters: min_duration, analyze, format, track, split,
- * top — they map onto the same settings the batch bed exposes as flags.
+ * top, waits — they map onto the same settings the batch bed exposes as flags.
  */
 
 import { createTestbed, slowestPlans } from './src/testbed.mjs';
-import { formatOutcome, formatStatements, formatPlan, formatTable } from './src/format.mjs';
+import {
+  formatOutcome,
+  formatPlan,
+  formatStatements,
+  formatTable,
+  formatWaitEvents,
+  formatWaitProfile,
+} from './src/format.mjs';
 
 const DEFAULT_FILES = ['user.sql'];
 
@@ -48,6 +55,7 @@ export function readOptions(search = window.location.search) {
     format: params.get('format') ?? 'text',
     track: params.get('track') ?? 'all',
     split: flag('split', true),
+    waits: flag('waits', false),
     top: Number(params.get('top') ?? 10),
   };
 }
@@ -58,6 +66,7 @@ export async function start({ replElement, logElement, statusElement, controls, 
   view.status(statusElement, 'booting PGlite …');
   const testbed = await createTestbed({
     loadSql: fetchSql,
+    measureWaits: options.waits,
     settings: {
       'auto_explain.log_min_duration': options.minDuration,
       'auto_explain.log_analyze': options.analyze ? 'on' : 'off',
@@ -74,7 +83,11 @@ export async function start({ replElement, logElement, statusElement, controls, 
     },
   });
 
-  view.status(statusElement, `${shortVersion(await testbed.version())} · auto_explain on · pg_stat_statements on`);
+  view.status(
+    statusElement,
+    `${shortVersion(await testbed.version())} · auto_explain on · pg_stat_statements on` +
+      (options.waits ? ' · waits measured' : ''),
+  );
   await testbed.resetStats();
   view.clear(); // the bed's own start up queries are not worth reporting
 
@@ -91,7 +104,10 @@ export async function start({ replElement, logElement, statusElement, controls, 
         await testbed.runFile(file, {
           split: options.split,
           onStatement: (outcome, index, total) =>
-            view.append(formatOutcome(outcome, { index, total, showPlans: false }), outcome.error ? 'error' : 'sql'),
+            view.append(
+              formatOutcome(outcome, { index, total, showPlans: false, showWaits: options.waits }),
+              outcome.error ? 'error' : 'sql',
+            ),
         });
       } catch (error) {
         view.append(`could not load ${file}: ${error.message}`, 'error');
@@ -130,6 +146,19 @@ function wireControls(controls = {}, { view, testbed, options, runFiles }) {
     const plans = slowestPlans(testbed.log.entries, options.top);
     view.section(`slowest ${options.top} single executions (auto_explain)`);
     view.append(formatTable(plans, { maxRows: options.top }), 'report');
+  });
+
+  controls.waitForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const search = controls.waitInput?.value.trim();
+    const rows = await testbed.waitEvents({ search: search || undefined, limit: 40 });
+    view.section(search ? `pg_wait_events matching "${search}"` : 'pg_wait_events');
+    view.append(formatWaitEvents(rows, { maxWidth: 60 }), 'report');
+  });
+
+  controls.waitProfileButton?.addEventListener('click', async () => {
+    view.section('wait profile (pg_stat_io, described by pg_wait_events)');
+    view.append(formatWaitProfile(await testbed.waitProfile(), { maxWidth: 44 }), 'report');
   });
 
   controls.resetButton?.addEventListener('click', async () => {

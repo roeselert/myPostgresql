@@ -17,6 +17,7 @@ the two shells differ (CLI flags and `fs` vs. query string and `fetch`).
 src/testbed.mjs    the bed: PGlite + extensions + settings + run/report helpers
 src/pg-log.mjs     captures the server log out of PGlite, parses auto_explain plans
 src/sql-split.mjs  splits a SQL script into single statements
+src/wait-events.mjs  the pg_wait_events catalog and per statement I/O waits
 src/format.mjs     tables, plans and reports as plain text
 ```
 
@@ -28,8 +29,11 @@ src/format.mjs     tables, plans and reports as plain text
   `log_analyze`, `log_buffers`, `log_timing`, `log_triggers`, `log_wal` and
   `log_nested_statements` on, so every statement logs an analyzed plan.
 
-Both are switchable at run time (`--min-duration`, `--track`, `?min_duration=`,
-`testbed.applySettings({...})`).
+* **Wait events** — `track_io_timing` and `track_wal_io_timing` on, so the
+  `pg_stat_io` counters behind the IO wait events carry real times.
+
+Everything is switchable at run time (`--min-duration`, `--track`,
+`?min_duration=`, `testbed.applySettings({...})`).
 
 Two things are worth knowing about how this works inside PGlite:
 
@@ -77,6 +81,9 @@ Options — `node batch.mjs --help`:
 | `--no-split` | send each file as one batch instead of statement by statement |
 | `--stop-on-error` | abort a file after the first failing statement |
 | `--no-plans` | do not print the plans |
+| `--waits` | measure what each statement waited on, and print a wait profile |
+| `--wait-events <text>` | look wait events up in `pg_wait_events` and exit (`all` for every one) |
+| `--wait-type <type>` | restrict `--wait-events` to IO, Lock, LWLock, IPC, Client, … |
 | `--min-duration <ms>` | `auto_explain.log_min_duration`, `-1` disables |
 | `--no-analyze` | plan only, no execution statistics |
 | `--format <fmt>` | `auto_explain.log_format`: text, json, yaml, xml |
@@ -89,6 +96,79 @@ Options — `node batch.mjs --help`:
 
 Files can also come from the `SQL_FILES` environment variable (space or comma
 separated), which is what the *Run Batch Test Bed* workflow uses.
+
+## Wait events
+
+Two separate things, because PGlite only supports one of them the way a real
+server does.
+
+**The catalog** works exactly as anywhere else — `pg_wait_events` (PostgreSQL
+17+) knows every wait event with its description, which is what you want the
+moment `pg_stat_activity.wait_event` shows you a name you do not recognise:
+
+```bash
+node batch.mjs --wait-events BufferMapping
+node batch.mjs --wait-events all --wait-type Lock
+```
+
+```
+┌────────┬───────────────┬────────────────────────────────────────────────────────────────────┐
+│ type   │ name          │ description                                                        │
+├────────┼───────────────┼────────────────────────────────────────────────────────────────────┤
+│ LWLock │ BufferMapping │ Waiting to associate a data block with a buffer in the buffer pool │
+└────────┴───────────────┴────────────────────────────────────────────────────────────────────┘
+```
+
+**Observing what a statement waited on** is where PGlite differs. On a real
+server you sample `pg_stat_activity` from a second connection; PGlite runs a
+single backend on a single thread, so nothing can look at it while it is busy
+and a sample would always come back idle. What it *can* give is `pg_stat_io`,
+the accumulated form of the IO wait events, diffed across a statement:
+
+```bash
+node batch.mjs --waits
+```
+
+```
+[1/1] CREATE TABLE big AS SELECT g, repeat('x',200) FROM generate_series(1,120000) g   (374.1 ms)
+  waits: 194.175 ms over 6 event(s), 3723 buffer hits
+    IO:WalInitWrite [init] 2× 97.264 ms 32.0 MB
+    IO:DataFileExtend [bulkwrite] 62× 85.766 ms 28.0 MB
+    IO:WalWrite [normal] 2866× 8.774 ms 30.4 MB
+    IO:DataFileWrite [bulkwrite] 1536× 2.285 ms 12.0 MB
+    IO:DataFileRead [normal] 11× 0.085 ms 88.0 kB
+    IO:WalInitSync [init] 2× 0.001 ms
+```
+
+Half of those 374 ms went into creating and extending files — which is the
+kind of thing neither the plan nor `pg_stat_statements` tells you. At the end
+comes the profile over the whole run, each row described by `pg_wait_events`:
+
+```
+┌───────────────────┬───────────┬───────┬──────────┬─────────┬─────────────────────────────────────────────┐
+│ wait_event        │ context   │ count │ total_ms │ bytes   │ description                                 │
+├───────────────────┼───────────┼───────┼──────────┼─────────┼─────────────────────────────────────────────┤
+│ IO:WalInitWrite   │ init      │ 2     │ 97.264   │ 32.0 MB │ Waiting for a write while initializing a n… │
+│ IO:DataFileExtend │ bulkwrite │ 62    │ 85.766   │ 28.0 MB │ Waiting for a relation data file to be ext… │
+│ IO:WalWrite       │ normal    │ 2866  │ 8.774    │ 30.4 MB │ Waiting for a write to a WAL file           │
+└───────────────────┴───────────┴───────┴──────────┴─────────┴─────────────────────────────────────────────┘
+```
+
+Two limits are worth knowing, both inherited from PostgreSQL rather than from
+the bed:
+
+* **Only IO waits show up.** `Lock`, `LWLock`, `IPC` and `Client` events need
+  more than one backend to happen at all, so they stay empty here. The catalog
+  still describes them, which is the point of having it.
+* **Inside `BEGIN … COMMIT` the waits land on the `COMMIT`.** A backend flushes
+  its statistics when a transaction ends, so per statement attribution is not
+  available inside a block — the bed prints `waits: deferred` there instead of
+  a misleading zero. (Between statements it forces the flush with
+  `pg_stat_force_next_flush()`, which is why `--waits` costs four extra
+  queries per statement.)
+
+For a single statement, `auto_explain`'s own `Buffers` and `I/O Timings` lines
+carry the same information and cost nothing extra.
 
 ## REPL bed
 
@@ -109,9 +189,10 @@ index.html?file=https://example.org/schema.sql
 ```
 
 Further parameters: `min_duration`, `analyze`, `format`, `track`, `split`,
-`top`. Statements typed into the REPL run through the same capture, so their
-plans land in the panel on the right; *Top statements* and *Slowest plans*
-render the same reports the batch bed prints.
+`top`, `waits`. Statements typed into the REPL run through the same capture, so
+their plans land in the panel on the right; *Top statements*, *Slowest plans*,
+*Wait events* and *Wait profile* render the same reports the batch bed prints.
+With `?waits=1` the start up files report what they waited on.
 
 The browser clamps timer resolution unless the page is cross-origin isolated,
 so `actual time` in the REPL is coarse (multiples of ~0.1 ms). Use the batch
@@ -130,6 +211,12 @@ const { plans, results } = await testbed.run('SELECT * FROM journey_view');
 console.log(plans[0].durationMs, plans[0].plan);
 console.log(await testbed.topStatements({ limit: 5, orderBy: 'mean' }));
 
+// wait events
+console.log(await testbed.waitEvents({ search: 'DataFile' }));
+const { io } = await testbed.run('VACUUM FULL journey', { waits: true });
+console.log(io.waits, io.totalMs);
+console.log(await testbed.waitProfile());
+
 await testbed.close();
 ```
 
@@ -141,7 +228,9 @@ npm test
 
 Covers the statement splitter and, against a real PGlite instance, that
 `auto_explain` produces analyzed plans, that `pg_stat_statements` records the
-statements, and that the settings can be changed at run time.
+statements, that the settings can be changed at run time, and that the wait
+event measurement works — including a check that every wait event name the
+`pg_stat_io` mapping produces really exists in `pg_wait_events`.
 
 ## SQL files in this repo
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { splitSql, stripComments, summarize } from '../src/sql-split.mjs';
-import { createTestbed, slowestPlans } from '../src/testbed.mjs';
+import { createTestbed, knownIoWaitEvents, slowestPlans } from '../src/testbed.mjs';
 
 test('splitSql keeps semicolons inside strings, comments and dollar quotes together', () => {
   assert.deepEqual(splitSql('SELECT 1; SELECT 2'), ['SELECT 1', 'SELECT 2']);
@@ -68,4 +68,74 @@ test('auto_explain settings can be changed at runtime', async (t) => {
   assert.equal((await testbed.run('SELECT 1')).plans.length, 0, 'disabled auto_explain logs nothing');
   await testbed.applySettings({ 'auto_explain.log_min_duration': 0 });
   assert.equal((await testbed.run('SELECT 1')).plans.length, 1);
+});
+
+test('every mapped IO wait event exists in pg_wait_events', async (t) => {
+  const testbed = await createTestbed();
+  t.after(() => testbed.close());
+
+  const names = knownIoWaitEvents();
+  assert.ok(names.length >= 10);
+  const { rows } = await testbed.pg.query('SELECT name FROM pg_wait_events WHERE name = ANY($1)', [names]);
+  const found = new Set(rows.map((row) => row.name));
+  assert.deepEqual(names.filter((name) => !found.has(name)), [], 'mapping must not invent wait event names');
+});
+
+test('the wait event catalog can be searched', async (t) => {
+  const testbed = await createTestbed();
+  t.after(() => testbed.close());
+
+  const [match] = await testbed.waitEvents({ search: 'BufferMapping' });
+  assert.equal(match.type, 'LWLock');
+  assert.match(match.description, /buffer pool/);
+
+  const locks = await testbed.waitEvents({ type: 'Lock', limit: 100 });
+  assert.ok(locks.length > 5);
+  assert.ok(locks.every((row) => row.type === 'Lock'));
+
+  const types = await testbed.waitEventTypes();
+  assert.ok(types.some((row) => row.type === 'IO' && row.events > 0));
+});
+
+test('IO waits are measured per statement', async (t) => {
+  const testbed = await createTestbed({ measureWaits: true, settings: { 'auto_explain.log_min_duration': -1 } });
+  t.after(() => testbed.close());
+
+  assert.deepEqual((await testbed.run('SELECT 1')).io.waits, [], 'a trivial statement must not pick up noise');
+
+  const built = await testbed.run(
+    "CREATE TABLE wide AS SELECT g AS id, repeat('x', 200) AS pad FROM generate_series(1, 60000) g",
+  );
+  assert.ok(built.io.waits.length > 0, 'writing 60k rows has to wait on I/O somewhere');
+  assert.ok(built.io.waits.some((wait) => wait.waitEvent === 'DataFileExtend'));
+  assert.ok(built.io.totalMs > 0);
+  assert.ok(built.io.waits.every((wait) => wait.type === 'IO' && wait.count > 0));
+
+  const profile = await testbed.waitProfile();
+  assert.ok(profile.length > 0);
+  assert.ok(profile.every((row) => row.description.length > 0), 'every wait needs its catalog description');
+  assert.ok(profile[0].timeMs >= profile[profile.length - 1].timeMs, 'sorted by time');
+});
+
+test('waits inside a transaction block are reported as deferred', async (t) => {
+  const testbed = await createTestbed({ measureWaits: true, settings: { 'auto_explain.log_min_duration': -1 } });
+  t.after(() => testbed.close());
+
+  await testbed.run('BEGIN');
+  const inside = await testbed.run('CREATE TABLE t AS SELECT g FROM generate_series(1, 40000) g');
+  assert.equal(inside.io.deferred, true);
+  assert.deepEqual(inside.io.waits, []);
+
+  const commit = await testbed.run('COMMIT');
+  assert.equal(commit.io.deferred, false);
+  assert.ok(commit.io.waits.length > 0, 'the block flushes its I/O on COMMIT');
+});
+
+test('pg_stat_activity is reachable', async (t) => {
+  const testbed = await createTestbed();
+  t.after(() => testbed.close());
+
+  const [self] = await testbed.activity();
+  assert.equal(self.state, 'active');
+  assert.match(self.query, /pg_stat_activity/);
 });

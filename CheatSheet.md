@@ -9,9 +9,10 @@
 1. [pg_stat_statements — Historical Query Stats](#1-pg_stat_statements--historical-query-stats)
 1. [auto_explain — Automatic Plan Logging](#2-auto_explain--automatic-plan-logging)
 1. [Reading EXPLAIN ANALYZE Output](#3-reading-explain-analyze-output)
-1. [Parameter Tuning — 4–8 GB RAM, SSD](#4-parameter-tuning--48-gb-ram-ssd)
-1. [Quick Reference Card](#5-quick-reference-card)
-1. [Small VM Baseline — 1 CPU / 1 GB RAM](#6-small-vm-baseline--1-cpu--1-gb-ram)
+1. [Wait Events — What Queries Are Waiting For](#4-wait-events--what-queries-are-waiting-for)
+1. [Parameter Tuning — 4–8 GB RAM, SSD](#5-parameter-tuning--48-gb-ram-ssd)
+1. [Quick Reference Card](#6-quick-reference-card)
+1. [Small VM Baseline — 1 CPU / 1 GB RAM](#7-small-vm-baseline--1-cpu--1-gb-ram)
 
 -----
 
@@ -193,9 +194,117 @@ Hash Batches: 1                           -- fit in memory, good
 
 -----
 
-## 4  Parameter Tuning — 4–8 GB RAM, SSD
+## 4  Wait Events — What Queries Are Waiting For
 
-### 4.1  Storage cost parameters
+`pg_stat_statements` says *which* statement is slow, `EXPLAIN ANALYZE` says
+*where* in the plan the time goes — wait events say *what the backend was
+blocked on* while it was not running.
+
+### 4.1  What is running right now, and what is it waiting for
+
+```sql
+SELECT pid,
+       now() - query_start                  AS running_for,
+       state,
+       wait_event_type || ':' || wait_event AS waiting_on,
+       left(query, 60)                      AS query
+FROM pg_stat_activity
+WHERE state <> 'idle'
+  AND pid <> pg_backend_pid()
+ORDER BY query_start;
+```
+
+`waiting_on` NULL means the backend is on CPU. Everything else names the
+wait — `Lock:transactionid`, `LWLock:BufferMapping`, `IO:DataFileRead`, …
+
+### 4.2  Look the name up
+
+```sql
+-- what does this event mean?
+SELECT type, name, description FROM pg_wait_events WHERE name = 'DataFileExtend';
+
+-- everything of one kind
+SELECT name, description FROM pg_wait_events WHERE type = 'Lock' ORDER BY name;
+```
+
+`pg_wait_events` needs PostgreSQL 17 or newer; on older versions the same list
+is in the *Wait Events* appendix of the manual.
+
+### 4.3  Sample it — one snapshot proves nothing
+
+A wait event is an instant, not a duration. Sample in a loop and count:
+
+```sql
+-- poor man's sampler: run from a second session, e.g. every 10 ms via watch
+CREATE UNLOGGED TABLE wait_samples AS
+SELECT now() AS ts, wait_event_type, wait_event, state
+FROM pg_stat_activity WHERE false;
+
+INSERT INTO wait_samples
+SELECT now(), wait_event_type, wait_event, state
+FROM pg_stat_activity
+WHERE state <> 'idle' AND pid <> pg_backend_pid();
+```
+
+```sql
+-- the profile: where the time went
+SELECT coalesce(wait_event_type || ':' || wait_event, 'CPU') AS waiting_on,
+       count(*)                                              AS samples,
+       round(100.0 * count(*) / sum(count(*)) OVER (), 1)    AS pct
+FROM wait_samples
+GROUP BY 1
+ORDER BY samples DESC;
+```
+
+The extension `pg_wait_sampling` does exactly this in the background, without
+the polling loop, and is worth installing on a busy server.
+
+### 4.4  The accumulated view: pg_stat_io
+
+The IO wait events also exist as counters. This needs `track_io_timing = on`
+(and `track_wal_io_timing = on` for the WAL rows), and unlike sampling it is
+exact:
+
+```sql
+SELECT backend_type, object, context,
+       reads, round(read_time::numeric, 1)   AS read_ms,
+       writes, round(write_time::numeric, 1) AS write_ms,
+       extends, round(extend_time::numeric, 1) AS extend_ms,
+       hits, evictions
+FROM pg_stat_io
+WHERE reads > 0 OR writes > 0 OR extends > 0
+ORDER BY read_time + write_time + extend_time DESC;
+```
+
+The mapping back to wait event names: `relation` reads/writes/extends are
+`DataFileRead` / `DataFileWrite` / `DataFileExtend`, `temp relation` is
+`BuffileRead` / `BuffileWrite`, `wal` is `WalRead` / `WalWrite` / `WalSync`.
+
+A backend only pushes these counters to shared memory about once a second, so
+for a single statement call `SELECT pg_stat_force_next_flush();` first — and
+note that inside an explicit `BEGIN … COMMIT` block the flush happens at the
+`COMMIT`, so the whole block's I/O is attributed there.
+
+### 4.5  What each type usually means
+
+| type | typical cause | first thing to look at |
+| --- | --- | --- |
+| `Lock` | a real row/table lock conflict | the blocking query, `log_lock_waits`, long transactions |
+| `LWLock` | internal contention | `BufferMapping`/`WALWrite` → too small `shared_buffers`, too much WAL |
+| `IO` | reading or writing files | cache hit ratio, `shared_buffers`, the storage itself |
+| `IPC` | waiting for another process | parallel workers, replication |
+| `Client` | waiting for the application | *not* a database problem — the client is slow to read |
+| `Timeout` | a deliberate sleep | `vacuum_cost_delay`, `pg_sleep` |
+| `BufferPin` | another backend pins the buffer | rare; usually long-running scans |
+
+`Client:ClientRead` dominating a profile means the backend is idle waiting for
+the next statement — exclude `state = 'idle'` before you read anything into it.
+
+-----
+
+## 5  Parameter Tuning — 4–8 GB RAM, SSD
+
+### 5.1  Storage cost parameters
 
 The planner uses the ratio of `random_page_cost` / `seq_page_cost` to choose between index and sequential scans.
 The default `4.0` was designed for spinning disks — too high for SSD, causes the planner to skip useful indexes.
@@ -212,7 +321,7 @@ ALTER SYSTEM SET effective_io_concurrency = 200;
 SELECT pg_reload_conf();   -- no restart needed
 ```
 
-### 4.2  Memory parameters
+### 5.2  Memory parameters
 
 |Parameter             |Default|Recommendation                                 |
 |----------------------|-------|-----------------------------------------------|
@@ -233,7 +342,7 @@ ALTER SYSTEM SET effective_cache_size = '3GB';
 SELECT pg_reload_conf();
 ```
 
-### 4.3  Statistics
+### 5.3  Statistics
 
 |Parameter                  |Default|Recommendation                          |
 |---------------------------|-------|----------------------------------------|
@@ -251,7 +360,7 @@ ANALYZE pgbench_accounts;
 > 💡 Rows mismatch in EXPLAIN ANALYZE (planner estimated 1, got 50000) usually means stale or insufficient statistics.
 > Run `ANALYZE` first, then increase `default_statistics_target` if the mismatch persists.
 
-### 4.4  Checkpoint & WAL
+### 5.4  Checkpoint & WAL
 
 |Parameter                     |Default|Recommendation                                               |
 |------------------------------|-------|-------------------------------------------------------------|
@@ -270,7 +379,7 @@ SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter;
 -- checkpoints_req >> checkpoints_timed  =  you are checkpoint-bound
 ```
 
-### 4.5  Parallelism
+### 5.5  Parallelism
 
 |Parameter                        |Default|Recommendation                             |
 |---------------------------------|-------|-------------------------------------------|
@@ -283,7 +392,7 @@ ALTER SYSTEM SET max_parallel_workers            = 4;
 SELECT pg_reload_conf();
 ```
 
-### 4.6  Full baseline — 4–8 GB RAM, SSD
+### 5.6  Full baseline — 4–8 GB RAM, SSD
 
 ```sql
 ALTER SYSTEM SET shared_buffers                  = '1GB';
@@ -306,7 +415,7 @@ SELECT pg_reload_conf();
 
 -----
 
-## 5  Quick Reference Card
+## 6  Quick Reference Card
 
 ### Restart vs Reload
 
@@ -347,9 +456,9 @@ SELECT name, context FROM pg_settings WHERE name = 'shared_buffers';
 
 -----
 
-## 6  Small VM Baseline — 1 CPU / 1 GB RAM
+## 7  Small VM Baseline — 1 CPU / 1 GB RAM
 
-### 6.1  Memory budget
+### 7.1  Memory budget
 
 With only 1 GB total, work backwards from what the OS needs before allocating anything to PostgreSQL.
 
@@ -369,7 +478,7 @@ With only 1 GB total, work backwards from what the OS needs before allocating an
 > more than half your RAM before a single query runs.
 > **Always set `max_connections` low on constrained VMs.**
 
-### 6.2  What changes vs a larger VM
+### 7.2  What changes vs a larger VM
 
 |Parameter                        |4–8 GB VM|1 GB VM   |Reason                             |
 |---------------------------------|---------|----------|-----------------------------------|
@@ -387,7 +496,7 @@ With only 1 GB total, work backwards from what the OS needs before allocating an
 |`random_page_cost`               |1.5      |1.5       |Still SSD — unchanged              |
 |`checkpoint_completion_target`   |0.9      |0.9       |Already optimal — unchanged        |
 
-### 6.3  Full baseline — paste and apply
+### 7.3  Full baseline — paste and apply
 
 ```sql
 -- Memory
@@ -421,7 +530,7 @@ SELECT pg_reload_conf();
 -- max_worker_processes, max_connections
 ```
 
-### 6.4  Connection pooling with PgBouncer
+### 7.4  Connection pooling with PgBouncer
 
 If you ever need more than 20 concurrent connections, add PgBouncer in front rather
 than raising `max_connections`. PgBouncer multiplexes many client connections onto a
