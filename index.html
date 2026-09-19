@@ -1,81 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PGlite REPL test bed</title>
+
+<!--
+  The import map lets the browser resolve the same bare specifiers that Node
+  resolves from node_modules, so src/testbed.mjs is shared verbatim between
+  this REPL bed and the batch bed in batch.mjs.
+  Keep the pinned version in step with package.json.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "@electric-sql/pglite": "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.5.8/dist/index.js",
+    "@electric-sql/pglite/contrib/auto_explain": "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.5.8/dist/contrib/auto_explain.js",
+    "@electric-sql/pglite/contrib/pg_stat_statements": "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.5.8/dist/contrib/pg_stat_statements.js"
+  }
+}
+</script>
+
 <script
-  src="https://cdn.jsdelivr.net/npm/@electric-sql/pglite-repl/dist-webcomponent/Repl.js"
+  src="https://cdn.jsdelivr.net/npm/@electric-sql/pglite-repl@0.4.8/dist-webcomponent/Repl.js"
   type="module"
 ></script>
 
-<!-- Include the Repl web component in your page -->
-<pglite-repl id="repl"></pglite-repl>
-
 <style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1b1f23;
+    --muted: #5b6570;
+    --border: #d8dee4;
+    --panel: #f6f8fa;
+    --accent: #2b6cb0;
+    --error: #b42318;
+    --pglite-font-size: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216;
+      --fg: #e6edf3;
+      --muted: #9aa5b1;
+      --border: #2b323b;
+      --panel: #161b22;
+      --accent: #6fa8dc;
+      --error: #ff7b72;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header { margin-bottom: 12px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  #status { color: var(--muted); font-size: 13px; }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin: 12px 0;
+  }
+  .controls form { display: flex; gap: 8px; flex: 1 1 320px; }
+  input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+  }
+  button {
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+
+  .layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 1100px) { .layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+
+  section > h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    margin: 0 0 6px;
+  }
+
   pglite-repl {
     display: block;
     width: 100%;
     height: 600px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
 
-    /* Typography */
-    --pglite-font-size: 12px;
+  #log {
+    height: 600px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    padding: 8px;
   }
-  
-  .PGliteRepl-input {
-    height: 400px; /* Adjust to fit roughly 15-20 lines of code */
+  .entry {
+    margin: 0 0 8px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    white-space: pre;
+    overflow-x: auto;
   }
-  
+  .entry--section {
+    white-space: normal;
+    font-weight: 600;
+    color: var(--accent);
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
+    margin-top: 12px;
+  }
+  .entry--plan { color: var(--fg); }
+  .entry--sql, .entry--report { color: var(--muted); }
+  .entry--error { color: var(--error); }
+
+  footer { margin-top: 16px; color: var(--muted); font-size: 12px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 </style>
+</head>
+<body>
 
+<header>
+  <h1>PGlite REPL test bed</h1>
+  <div id="status">loading …</div>
+</header>
+
+<div class="controls">
+  <form id="load-form">
+    <input id="load-input" type="text" placeholder="user.sql, train.sql — or a full URL" />
+    <button type="submit">Run SQL file</button>
+  </form>
+  <button id="top-button" type="button">Top statements</button>
+  <button id="slowest-button" type="button">Slowest plans</button>
+  <button id="reset-button" type="button">Reset statistics</button>
+  <button id="clear-button" type="button">Clear panel</button>
+</div>
+
+<div class="layout">
+  <section>
+    <h2>REPL</h2>
+    <pglite-repl id="repl"></pglite-repl>
+  </section>
+  <section>
+    <h2>auto_explain plans &amp; reports</h2>
+    <div id="log"></div>
+  </section>
+</div>
+
+<footer>
+  Start up files come from the query string, e.g.
+  <code>?file=train.sql&amp;file=user.sql</code>. Further parameters:
+  <code>min_duration</code>, <code>analyze</code>, <code>format</code>,
+  <code>track</code>, <code>split</code>, <code>top</code>.
+</footer>
 
 <script type="module">
-  import { PGlite } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js'
-  import { pg_stat_statements } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/contrib/pg_stat_statements.js';
-  import { auto_explain } from 'https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/contrib/auto_explain.js';
+  import { start } from './repl.mjs';
 
-  
-  // Create a PGlite instance
-  const pg = new PGlite();
-
-  /*
-  const pg = new PGlite({
-    extensions: { pg_stat_statements, auto_explain  }
-  }); 
-
-
-  const res1 = await pg.exec('CREATE EXTENSION IF NOT EXISTS auto_explain;')
-  console.log(res1);
-  const res2 = await pg.exec('CREATE EXTENSION IF NOT EXISTS pg_stat_statements;')
-  console.log(res2);
-  */
-  // Retrieve the Repl element
-  const repl = document.getElementById('repl')
-
-  repl.history = [
-  "CREATE TABLE test (id serial primary key, name text);",
-  "INSERT INTO test (name) VALUES ('Alice');"
-];
-
-  
-  // REPL to your PGlite instance
-  repl.pg = pg
-
-console.log("Ready!");
-
-// Determine SQL file from URL parameter (supports ?file= or ?sql=). Default: user.sql
-const params = new URLSearchParams(window.location.search);
-const fileParam = params.get('file') || 'user.sql';
-
-// If the param looks like a full URL, use it. Otherwise resolve relative to current page.
-const sqlUrl = new URL(fileParam, window.location.href.split('?')[0]).href;
-
-console.log("Loading SQL from:", sqlUrl);
-try {
-  const url = 'https://roeselert.github.io/pglite/user.sql'
-  const response = await fetch(sqlUrl);
-  if (!response.ok) {
-    throw new Error(`HTTP error! Status: ${response.status}`);
-  }
-  const data = await response.text();
-  const res = await pg.exec(data)
-  console.log(res);
-} catch (error) {
-    console.error('Error fetching data:', error);
-}
-  
+  start({
+    replElement: document.getElementById('repl'),
+    logElement: document.getElementById('log'),
+    statusElement: document.getElementById('status'),
+    controls: {
+      loadForm: document.getElementById('load-form'),
+      loadInput: document.getElementById('load-input'),
+      topButton: document.getElementById('top-button'),
+      slowestButton: document.getElementById('slowest-button'),
+      resetButton: document.getElementById('reset-button'),
+      clearButton: document.getElementById('clear-button'),
+    },
+  }).catch((error) => {
+    document.getElementById('status').textContent = `failed to start: ${error.message}`;
+    console.error(error);
+  });
 </script>
+
+</body>
+</html>
