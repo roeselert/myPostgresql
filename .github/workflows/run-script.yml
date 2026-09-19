@@ -1,7 +1,16 @@
-name: Run Batch Script
+name: Run Batch Test Bed
 
 on:
-  workflow_dispatch: # Aktiviert den Button für den rein manuellen Start im GitHub-Dashboard
+  workflow_dispatch:
+    inputs:
+      files:
+        description: 'SQL files to load on start up (space or comma separated)'
+        required: false
+        default: 'user.sql'
+      top:
+        description: 'Number of statements in the pg_stat_statements report'
+        required: false
+        default: '10'
 
 jobs:
   run-batch:
@@ -18,14 +27,16 @@ jobs:
 
     - name: Install dependencies
       run: npm install
-          
-    - name: Run script and dump output
-      run: |
-        npm run start
+
+    - name: Run the test bed and dump the output
+      env:
+        SQL_FILES: ${{ inputs.files }}
+      run: npm start -- --top "${{ inputs.top }}" --out output.log
 
     - name: Upload output artifact
       uses: actions/upload-artifact@v4
       with:
         name: script-output-log
         path: output.log
+        if-no-files-found: error
         retention-days: 7

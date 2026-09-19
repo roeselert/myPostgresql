@@ -1,13 +1,16 @@
 {
-  "name": "pglite-local-script",
-  "version": "1.0.0",
+  "name": "pglite-testbed",
+  "version": "2.0.0",
   "type": "module",
-  "description": "PGlite script running with local node dependencies",
+  "description": "PGlite test beds (batch + REPL) with pg_stat_statements and auto_explain enabled",
   "main": "batch.mjs",
   "scripts": {
-    "start": "node batch.mjs"
+    "start": "node batch.mjs",
+    "batch": "node batch.mjs",
+    "repl": "npx --yes http-server . -p 8080 -c-1",
+    "test": "node --test test/testbed.test.mjs"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.1"
+    "@electric-sql/pglite": "^0.5.8"
   }
 }
