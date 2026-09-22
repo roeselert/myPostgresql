@@ -14,6 +14,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { auto_explain } from '@electric-sql/pglite/contrib/auto_explain';
 import { pg_stat_statements } from '@electric-sql/pglite/contrib/pg_stat_statements';
+import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 
 import { PgLog, plansOf, realConsole } from './pg-log.mjs';
 import { splitSql, stripComments, summarize } from './sql-split.mjs';
@@ -92,7 +93,9 @@ export async function createTestbed(options = {}) {
       // Required: PGlite only forwards the backend's stderr -- and with it the
       // auto_explain plans -- to the console while debug is enabled.
       debug: 1,
-      extensions: { auto_explain, pg_stat_statements, ...extensions },
+      // pg_trgm carries no cost until used, and the Bluebox schema needs it;
+      // PGlite can only register extensions when the instance is created.
+      extensions: { auto_explain, pg_stat_statements, pg_trgm, ...extensions },
     });
     await instance.waitReady;
     return instance;
@@ -283,8 +286,16 @@ export async function createTestbed(options = {}) {
   return testbed;
 }
 
-/** Queries the bed runs to report on itself, which no report should list. */
-const BOOKKEEPING = /pg_stat_statements|pg_stat_io|pg_stat_force_next_flush|pg_wait_events|pg_stat_activity/i;
+/**
+ * Queries the bed runs to keep house — reporting on itself, and the job
+ * runner's own reads and writes. No report or plan panel should show these.
+ */
+const BOOKKEEPING =
+  /pg_stat_statements|pg_stat_io|pg_stat_force_next_flush|pg_wait_events|pg_stat_activity|job\.(job|run_details|status|recent_runs)/i;
+
+export function isBookkeeping(sql) {
+  return BOOKKEEPING.test(sql ?? '');
+}
 
 /**
  * The plans auto_explain logged, most expensive first. The bed's own

@@ -16,7 +16,8 @@
   "imports": {
     "@electric-sql/pglite": "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.5.8/dist/index.js",
     "@electric-sql/pglite/contrib/auto_explain": "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.5.8/dist/contrib/auto_explain.js",
-    "@electric-sql/pglite/contrib/pg_stat_statements": "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.5.8/dist/contrib/pg_stat_statements.js"
+    "@electric-sql/pglite/contrib/pg_stat_statements": "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.5.8/dist/contrib/pg_stat_statements.js",
+    "@electric-sql/pglite/contrib/pg_trgm": "https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.5.8/dist/contrib/pg_trgm.js"
   }
 }
 </script>
@@ -135,6 +136,7 @@
     margin-top: 12px;
   }
   .entry--plan { color: var(--fg); }
+  .entry--job { color: var(--accent); white-space: pre-wrap; }
   .entry--sql, .entry--report { color: var(--muted); }
   .entry--error { color: var(--error); }
 
@@ -158,6 +160,13 @@
   <button id="slowest-button" type="button">Slowest plans</button>
   <button id="reset-button" type="button">Reset statistics</button>
   <button id="clear-button" type="button">Clear panel</button>
+</div>
+
+<div class="controls">
+  <button id="bluebox-button" type="button">Load Bluebox schema</button>
+  <button id="jobs-button" type="button">Start jobs</button>
+  <button id="job-status-button" type="button">Job status</button>
+  <button id="job-runs-button" type="button">Job runs</button>
 </div>
 
 <div class="controls">
@@ -187,6 +196,13 @@
   With <code>?waits=1</code> the start up files report what they waited on;
   for a statement typed below, the plan's <code>Buffers</code> and
   <code>I/O Timings</code> lines carry the same information.
+  <br />
+  <code>?bluebox=1</code> loads the
+  <a href="https://github.com/ryanbooz/bluebox">Bluebox</a> sample schema on
+  start up and <code>&amp;jobs=1</code> starts its schedule. PGlite has no
+  pg_cron, so that schedule is a timer in this page — the jobs and every
+  execution live in the <code>job</code> schema, queryable as
+  <code>job.status</code> and <code>job.recent_runs</code>.
 </footer>
 
 <script type="module">
@@ -206,6 +222,10 @@
       waitForm: document.getElementById('wait-form'),
       waitInput: document.getElementById('wait-input'),
       waitProfileButton: document.getElementById('wait-profile-button'),
+      blueboxButton: document.getElementById('bluebox-button'),
+      jobsButton: document.getElementById('jobs-button'),
+      jobStatusButton: document.getElementById('job-status-button'),
+      jobRunsButton: document.getElementById('job-runs-button'),
     },
   }).catch((error) => {
     document.getElementById('status').textContent = `failed to start: ${error.message}`;

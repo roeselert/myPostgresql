@@ -51,9 +51,13 @@ export class PgLog {
     console.debug = (...args) => {
       if (this._depth === 0) realConsole.debug(...args);
     };
-    // PGlite dumps the raw notice object here whenever debug is on.
+    // PGlite hands the raw notice object here whenever debug is on. A
+    // RAISE NOTICE from plpgsql arrives over the protocol rather than in the
+    // server log, so fold it into the same stream as a synthetic log line.
     console.warn = (...args) => {
-      if (this._depth === 0) realConsole.warn(...args);
+      const notice = args.find(isNotice);
+      if (notice) this._lines.push(formatNotice(notice));
+      else if (this._depth === 0) realConsole.warn(...args);
     };
     return this;
   }
@@ -115,6 +119,17 @@ export class PgLog {
     this._lines.length = 0;
     this._parsed = 0;
   }
+}
+
+function isNotice(value) {
+  return Boolean(value) && typeof value === 'object' && typeof value.message === 'string'
+    && typeof value.severity === 'string';
+}
+
+/** Render a protocol notice the way the server log would have written it. */
+function formatNotice(notice) {
+  const time = new Date().toISOString().replace('T', ' ').replace('Z', '').slice(0, 23);
+  return `${time} UTC [0] ${notice.severity}:  ${notice.message}`;
 }
 
 const PLAN_HEADER = /^duration:\s+([\d.]+)\s+ms\s+plan:/;

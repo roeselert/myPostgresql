@@ -8,7 +8,8 @@
     "start": "node batch.mjs",
     "batch": "node batch.mjs",
     "repl": "npx --yes http-server . -p 8080 -c-1",
-    "test": "node --test test/testbed.test.mjs"
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "build:bluebox": "node tools/build-bluebox.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8"
