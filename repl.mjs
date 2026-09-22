@@ -15,9 +15,13 @@
  *
  * Other recognised parameters: min_duration, analyze, format, track, split,
  * top, waits — they map onto the same settings the batch bed exposes as flags.
+ * `?bluebox=1` loads the Bluebox sample schema on start up, `&jobs=1` also
+ * starts its schedule; see src/bluebox.mjs.
  */
 
-import { createTestbed, slowestPlans } from './src/testbed.mjs';
+import { createTestbed, isBookkeeping, slowestPlans } from './src/testbed.mjs';
+import { BLUEBOX_HISTORY, isBlueboxLoaded, loadBluebox } from './src/bluebox.mjs';
+import { createJobRunner } from './src/job-runner.mjs';
 import {
   formatOutcome,
   formatPlan,
@@ -56,6 +60,9 @@ export function readOptions(search = window.location.search) {
     track: params.get('track') ?? 'all',
     split: flag('split', true),
     waits: flag('waits', false),
+    bluebox: flag('bluebox', false),
+    jobs: flag('jobs', false),
+    historyDays: Number(params.get('history') ?? 30),
     top: Number(params.get('top') ?? 10),
   };
 }
@@ -75,7 +82,10 @@ export async function start({ replElement, logElement, statusElement, controls, 
     },
     onEntry: (entry) => {
       // Plans from statements typed into the REPL land here.
-      if (entry.kind === 'plan') view.append(formatPlan(entry, { indent: '' }), 'plan');
+      if (entry.kind === 'plan') {
+        // The job runner's own reads and writes are not the workload.
+        if (!isBookkeeping(entry.queryText)) view.append(formatPlan(entry, { indent: '' }), 'plan');
+      }
       else if (REPORTED_LEVELS.has(entry.level)) view.append(entry.text, 'notice');
     },
     onProgress: (phase, detail) => {
@@ -115,21 +125,120 @@ export async function start({ replElement, logElement, statusElement, controls, 
     }
   };
 
-  wireControls(controls, {
-    view,
-    testbed,
-    options,
-    runFiles,
-  });
+  const bluebox = createBlueboxControls({ view, testbed, options, replElement, statusElement });
+
+  wireControls(controls, { view, testbed, options, runFiles, bluebox });
 
   view.section('start up');
-  await runFiles(options.files);
+  if (options.bluebox) await bluebox.load();
+  else await runFiles(options.files);
+  if (options.jobs) await bluebox.toggleJobs(true);
   view.section('ready — type SQL below');
 
-  return { testbed, runFiles, view };
+  return { testbed, runFiles, view, bluebox };
 }
 
-function wireControls(controls = {}, { view, testbed, options, runFiles }) {
+/**
+ * The Bluebox sample schema and its pg_cron stand-in. pg_cron is a background
+ * worker and PGlite has none, so the schedule is a timer in this page while
+ * the job definitions and every execution live in the `job` schema.
+ */
+function createBlueboxControls({ view, testbed, options, replElement, statusElement }) {
+  let runner = null;
+
+  const ensureRunner = () => {
+    runner ??= createJobRunner(testbed, {
+      onRun: (run) =>
+        view.append(
+          `job ${run.jobname} ${run.status} in ${run.durationMs.toFixed(1)} ms — ${run.message}`,
+          run.status === 'failed' ? 'error' : 'job',
+        ),
+      onError: (error) => {
+        view.append(`job runner stopped: ${error.message}`, 'error');
+        if (statusElement) statusElement.textContent = `job runner stopped: ${error.message}`;
+      },
+    });
+    return runner;
+  };
+
+  return {
+    get runner() {
+      return runner;
+    },
+
+    async load() {
+      if (await isBlueboxLoaded(testbed.pg)) {
+        view.section('Bluebox is already loaded');
+        return false;
+      }
+      view.section('loading Bluebox');
+      try {
+        const { loaded, summary } = await loadBluebox(testbed, {
+          historyDays: options.historyDays,
+          onProgress: (phase, detail) => {
+            if (phase === 'loaded') view.append(`${detail.label}: ${detail.statements} statements, ${detail.elapsedMs} ms`, 'sql');
+            if (phase === 'history') view.append(`generating ${detail} days of rental history …`, 'sql');
+          },
+        });
+        view.append(formatTable(summary, { maxRows: summary.length }), 'report');
+        view.append(
+          'pg_cron is not available in PGlite: the schedule runs in this page, '
+          + 'the jobs and their run log live in the job schema. Start it with the Jobs button, '
+          + 'or query job.status and job.recent_runs.',
+          'sql',
+        );
+        replElement.history = [...BLUEBOX_HISTORY, ...(replElement.history ?? [])];
+        return loaded;
+      } catch (error) {
+        view.append(`loading Bluebox failed: ${error.message}`, 'error');
+        for (const failure of error.failures ?? []) view.append(`  ${failure.sql}\n    ${failure.message}`, 'error');
+        throw error;
+      }
+    },
+
+    /** @param {boolean} [start] force a direction instead of toggling */
+    async toggleJobs(start) {
+      if (!(await isBlueboxLoaded(testbed.pg))) {
+        view.section('load Bluebox first — the jobs call its procedures');
+        return false;
+      }
+      const jobRunner = ensureRunner();
+      const shouldStart = start ?? !jobRunner.running;
+      if (shouldStart) {
+        jobRunner.start();
+        const jobs = (await jobRunner.jobs()).filter((job) => job.active);
+        view.section(`job schedule started — ${jobs.map((job) => `${job.jobname} every ${job.interval_ms / 1000}s`).join(', ')}`);
+      } else {
+        await jobRunner.stop();
+        view.section('job schedule stopped');
+      }
+      return shouldStart;
+    },
+
+    async report(which) {
+      const jobRunner = ensureRunner();
+      if (which === 'status') {
+        view.section('job.status');
+        view.append(formatTable(await jobRunner.status(), { maxRows: 20, maxWidth: 40 }), 'report');
+      } else {
+        view.section('job.recent_runs');
+        view.append(formatTable(await jobRunner.recentRuns(options.top * 2), { maxRows: options.top * 2, maxWidth: 46 }), 'report');
+      }
+    },
+  };
+}
+
+function wireControls(controls = {}, { view, testbed, options, runFiles, bluebox }) {
+  controls.blueboxButton?.addEventListener('click', () => bluebox.load().catch(() => {}));
+
+  controls.jobsButton?.addEventListener('click', async () => {
+    const started = await bluebox.toggleJobs();
+    if (controls.jobsButton) controls.jobsButton.textContent = started ? 'Stop jobs' : 'Start jobs';
+  });
+
+  controls.jobStatusButton?.addEventListener('click', () => bluebox.report('status'));
+  controls.jobRunsButton?.addEventListener('click', () => bluebox.report('runs'));
+
   controls.loadForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const value = controls.loadInput?.value.trim();
