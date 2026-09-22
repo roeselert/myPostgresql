@@ -197,7 +197,11 @@ Further parameters: `min_duration`, `analyze`, `format`, `track`, `split`,
 `top`, `waits`, `bluebox`, `jobs`, `history`. Statements typed into the REPL
 run through the same capture, so their plans land in the panel on the right;
 *Top statements*, *Slowest plans*, *Wait events* and *Wait profile* render the
-same reports the batch bed prints. With `?waits=1` the start up files report
+same reports the batch bed prints. *auto_explain: on/off* flips
+`auto_explain.log_min_duration` between the bed's threshold (`?min_duration=`,
+0 by default) and `-1` — for a quiet panel while a long script runs, or to
+time something without the plan logging in the numbers. Switching back on
+restores the threshold rather than resetting it to 0. With `?waits=1` the start up files report
 what they waited on, and `?bluebox=1&jobs=1` starts with the Bluebox schema
 and its schedule running — see [Bluebox](#bluebox).
 

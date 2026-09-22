@@ -139,3 +139,18 @@ test('pg_stat_activity is reachable', async (t) => {
   assert.equal(self.state, 'active');
   assert.match(self.query, /pg_stat_activity/);
 });
+
+test('auto_explain can be switched off and back on to its threshold', async (t) => {
+  const testbed = await createTestbed({ settings: { 'auto_explain.log_min_duration': 25 } });
+  t.after(() => testbed.close());
+
+  assert.equal(testbed.settings['auto_explain.log_min_duration'], 25);
+  assert.equal((await testbed.run('SELECT 1')).plans.length, 0, '1 ms is under the 25 ms threshold');
+
+  await testbed.applySettings({ 'auto_explain.log_min_duration': -1 });
+  assert.equal((await testbed.run('SELECT pg_sleep(0.05)')).plans.length, 0, 'switched off logs nothing');
+
+  await testbed.applySettings({ 'auto_explain.log_min_duration': 25 });
+  assert.equal(testbed.settings['auto_explain.log_min_duration'], 25);
+  assert.equal((await testbed.run('SELECT pg_sleep(0.05)')).plans.length, 1, 'the threshold came back');
+});

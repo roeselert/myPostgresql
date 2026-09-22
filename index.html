@@ -91,6 +91,8 @@
     cursor: pointer;
   }
   button:hover { border-color: var(--accent); color: var(--accent); }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  button[aria-pressed="false"] { color: var(--muted); }
 
   .layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
   @media (min-width: 1100px) { .layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
@@ -156,6 +158,7 @@
     <input id="load-input" type="text" placeholder="user.sql, train.sql — or a full URL" />
     <button type="submit">Run SQL file</button>
   </form>
+  <button id="explain-button" type="button" aria-pressed="true">auto_explain: on</button>
   <button id="top-button" type="button">Top statements</button>
   <button id="slowest-button" type="button">Slowest plans</button>
   <button id="reset-button" type="button">Reset statistics</button>
@@ -196,6 +199,10 @@
   With <code>?waits=1</code> the start up files report what they waited on;
   for a statement typed below, the plan's <code>Buffers</code> and
   <code>I/O Timings</code> lines carry the same information.
+  <em>auto_explain: on/off</em> flips
+  <code>auto_explain.log_min_duration</code> between the bed's threshold and
+  <code>-1</code> — for a quiet panel, or to measure without the plan logging
+  in the numbers.
   <br />
   <code>?bluebox=1</code> loads the
   <a href="https://github.com/ryanbooz/bluebox">Bluebox</a> sample schema on
@@ -219,6 +226,7 @@
       slowestButton: document.getElementById('slowest-button'),
       resetButton: document.getElementById('reset-button'),
       clearButton: document.getElementById('clear-button'),
+      explainButton: document.getElementById('explain-button'),
       waitForm: document.getElementById('wait-form'),
       waitInput: document.getElementById('wait-input'),
       waitProfileButton: document.getElementById('wait-profile-button'),
