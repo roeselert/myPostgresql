@@ -93,11 +93,16 @@ export async function start({ replElement, logElement, statusElement, controls, 
     },
   });
 
-  view.status(
-    statusElement,
-    `${shortVersion(await testbed.version())} · auto_explain on · pg_stat_statements on` +
-      (options.waits ? ' · waits measured' : ''),
-  );
+  const explain = createExplainToggle(testbed, options);
+  const banner = shortVersion(await testbed.version());
+  const renderStatus = () =>
+    view.status(
+      statusElement,
+      `${banner} · auto_explain ${explain.enabled ? `on (>= ${explain.threshold} ms)` : 'off'}`
+        + ' · pg_stat_statements on'
+        + (options.waits ? ' · waits measured' : ''),
+    );
+  renderStatus();
   await testbed.resetStats();
   view.clear(); // the bed's own start up queries are not worth reporting
 
@@ -127,7 +132,7 @@ export async function start({ replElement, logElement, statusElement, controls, 
 
   const bluebox = createBlueboxControls({ view, testbed, options, replElement, statusElement });
 
-  wireControls(controls, { view, testbed, options, runFiles, bluebox });
+  wireControls(controls, { view, testbed, options, runFiles, bluebox, explain, renderStatus });
 
   view.section('start up');
   if (options.bluebox) await bluebox.load();
@@ -135,7 +140,40 @@ export async function start({ replElement, logElement, statusElement, controls, 
   if (options.jobs) await bluebox.toggleJobs(true);
   view.section('ready — type SQL below');
 
-  return { testbed, runFiles, view, bluebox };
+  return { testbed, runFiles, view, bluebox, explain };
+}
+
+/**
+ * auto_explain on and off at run time.
+ *
+ * `auto_explain.log_min_duration` is what decides whether a statement logs a
+ * plan at all: 0 logs every one, -1 logs none. Turning it off is the way to
+ * get a quiet panel while loading a schema or running a long script — and to
+ * measure without the logging overhead in the numbers.
+ *
+ * Switching back on restores the threshold the bed started with, so
+ * `?min_duration=50` survives a round trip. A bed started at -1 comes back on
+ * at 0, since "off" is not a threshold to return to.
+ */
+function createExplainToggle(testbed, options) {
+  const threshold = options.minDuration >= 0 ? options.minDuration : 0;
+
+  const state = {
+    threshold,
+
+    get enabled() {
+      return Number(testbed.settings['auto_explain.log_min_duration']) >= 0;
+    },
+
+    /** @param {boolean} [enabled] force a direction instead of toggling */
+    async set(enabled) {
+      const next = enabled ?? !state.enabled;
+      await testbed.applySettings({ 'auto_explain.log_min_duration': next ? threshold : -1 });
+      return next;
+    },
+  };
+
+  return state;
 }
 
 /**
@@ -228,7 +266,25 @@ function createBlueboxControls({ view, testbed, options, replElement, statusElem
   };
 }
 
-function wireControls(controls = {}, { view, testbed, options, runFiles, bluebox }) {
+function wireControls(controls = {}, { view, testbed, options, runFiles, bluebox, explain, renderStatus }) {
+  const renderExplainButton = () => {
+    if (!controls.explainButton) return;
+    controls.explainButton.textContent = `auto_explain: ${explain.enabled ? 'on' : 'off'}`;
+    controls.explainButton.setAttribute('aria-pressed', String(explain.enabled));
+  };
+  renderExplainButton();
+
+  controls.explainButton?.addEventListener('click', async () => {
+    const enabled = await explain.set();
+    renderExplainButton();
+    renderStatus();
+    view.section(
+      enabled
+        ? `auto_explain on — logging plans for statements over ${explain.threshold} ms`
+        : 'auto_explain off — no plans until it is switched back on',
+    );
+  });
+
   controls.blueboxButton?.addEventListener('click', () => bluebox.load().catch(() => {}));
 
   controls.jobsButton?.addEventListener('click', async () => {
